@@ -1,6 +1,10 @@
 # =============================================================================
 # server.R
 # =============================================================================
+# Thin now that each view is a module. The only real work here is simulating
+# the cohort, scoping it, aggregating it, and routing whichever view is active
+# into the shared detail panel.
+# =============================================================================
 
 function(input, output, session) {
 
@@ -25,7 +29,7 @@ function(input, output, session) {
   horizon  <- shiny::reactive(sim()$horizon_yrs)   # as simulated, not as slid
 
   # ---------------------------------------------------------------------------
-  # 2. Scope the cohort, then aggregate into nodes
+  # 2. Scope, then aggregate
   # ---------------------------------------------------------------------------
   scoped <- shiny::reactive({
     d <- cohort()
@@ -52,7 +56,6 @@ function(input, output, session) {
                  shiny::div(class = "kpi-val", value),
                  shiny::div(class = "kpi-lab", label))
     }
-
     pct <- function(x) sprintf("%.1f%%", 100 * mean(x))
 
     as_arm <- dplyr::filter(d, init_mgmt == "Active surveillance")
@@ -71,64 +74,39 @@ function(input, output, session) {
   })
 
   # ---------------------------------------------------------------------------
-  # 4. The tree
+  # 4. Views -- each returns a reactive selection with the same shape
   # ---------------------------------------------------------------------------
-  output$pathway_tree <- echarts4r::renderEcharts4r({
-    plot_pathway_tree(
-      tree_df(),
-      title = if (identical(input$scope, "deferred")) {
-        "Active surveillance vs watchful waiting"
-      } else {
-        "Prostate cancer treatment pathways"
-      },
-      subtitle = sprintf(
-        "Synthetic cohort, n = %s, %d-year horizon",
-        format(nrow(scoped()), big.mark = ","), horizon()
-      ),
-      depth       = input$depth,
-      click_input = "pathway_click"
+  sel_tree <- mod_tree_view_server(
+    "tree",
+    cohort     = scoped,
+    membership = membership,
+    nodes      = nodes,
+    tree_df    = tree_df,
+    depth      = shiny::reactive(input$depth),
+    scope      = shiny::reactive(input$scope),
+    horizon    = horizon
+  )
+
+  sel_network <- mod_network_view_server("network", cohort = scoped, membership = membership)
+  sel_sankey  <- mod_sankey_view_server ("sankey",  cohort = scoped, membership = membership)
+
+  # ---------------------------------------------------------------------------
+  # 5. Route the active view into the shared detail panel
+  # ---------------------------------------------------------------------------
+  selected <- shiny::reactive({
+    # %||% is only in base R from 4.4; the project floor is 4.1.
+    tab <- input$view_tabs
+    if (is.null(tab)) tab <- "tree"
+
+    switch(
+      tab,
+      tree    = sel_tree(),
+      network = sel_network(),
+      sankey  = sel_sankey(),
+      NULL
     )
   })
 
-  # ---------------------------------------------------------------------------
-  # 5. Click -> selection
-  # ---------------------------------------------------------------------------
-  selected <- shiny::reactiveVal(NULL)
-
-  # Clear the selection whenever the tree underneath it changes, otherwise the
-  # detail panel silently keeps showing patients from a cohort that no longer
-  # exists.
-  shiny::observeEvent(list(input$scope, sim()), {
-    selected(NULL)
-  }, ignoreInit = TRUE)
-
-  shiny::observeEvent(input$pathway_click, {
-    res <- resolve_clicked_node(input$pathway_click, nodes())
-
-    if (is.null(res)) {
-      shiny::showNotification(
-        "Could not resolve that node back to a set of patients.",
-        type = "warning"
-      )
-      return()
-    }
-
-    ids <- membership() |>
-      dplyr::filter(node_id == res$node_id) |>
-      dplyr::pull(patient_id)
-
-    selected(list(
-      node_id     = res$node_id,
-      label       = res$node_id,   # node_id IS the readable "A > B > C" path
-      patient_ids = ids,
-      method      = res$method,
-      ambiguous   = res$ambiguous
-    ))
-  })
-
-  # ---------------------------------------------------------------------------
-  # 6. Detail panel module
-  # ---------------------------------------------------------------------------
   mod_branch_detail_server(
     "branch",
     selection = selected,

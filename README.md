@@ -6,21 +6,59 @@ on a synthetic cohort. Scoping prototype, not a validated tool.
 ## Run
 
 ```r
-shiny::runApp("pca-pathway-app")
+shiny::runApp()
+```
+
+Dependencies install themselves on first run in an interactive session. To do
+it deliberately instead:
+
+```r
+source("setup.R")
 ```
 
 ## Structure
 
 ```
-pca-pathway-app/
+echarts4r-tree-poc/
+├── DESCRIPTION                 # dependency declaration (read by renv / pak)
+├── dependencies.R              # version-aware bootstrap, base R only
+├── setup.R                     # one-shot installer, plus the renv path
 ├── global.R                    # packages, sourcing, defaults, CSS
-├── ui.R                        # layout
-├── server.R                    # reactive wiring, click handling
+├── ui.R                        # layout, view tabs
+├── server.R                    # simulation, aggregation, view routing
 └── funs/
     ├── fct_simulate.R          # synthetic cohort + PSA series
-    ├── fct_tree.R              # aggregation, nesting, rendering, click resolution
-    └── mod_branch_detail.R     # Shiny module: detail panel
+    ├── fct_tree.R              # hierarchy aggregation, nesting, e_tree rendering
+    ├── fct_graph.R             # graph + Sankey data prep
+    ├── mod_tree_view.R         # view 1: echarts4r e_tree
+    ├── mod_network_view.R      # view 2: visNetwork
+    ├── mod_sankey_view.R       # view 3: echarts4r e_sankey
+    └── mod_branch_detail.R     # shared: PSA trajectories, branch summary
 ```
+
+## Three views, one cohort
+
+All three views render the same aggregated pathway data and resolve a click
+back to the same patient set, so the detail panel below them is directly
+comparable. They differ in what they can structurally express:
+
+| View | Node identity | Can show convergence? | Tooltips built with |
+|---|---|---|---|
+| Tree (`e_tree`) | full ancestral path | No — duplicates the node per branch | JS formatter |
+| Network (`visNetwork`) | label, or full path (toggle) | Yes — one node, several inbound edges | HTML string in R |
+| Sankey (`e_sankey`) | label + level | Partially — merges within a level | ECharts default |
+
+The network view's "merge identical labels" toggle is the comparison worth
+making: on, "Radical prostatectomy" reached via surveillance and performed
+upfront become one node; off, the topology reverts to the tree's. Merged nodes
+are coloured differently, and the detail panel flags that it is summarising a
+group pooled across pathway depths.
+
+Sankey labels appearing at more than one level are suffixed (`(L4)`, `(L6)`).
+This is not cosmetic: ECharts Sankey requires an acyclic graph, and merging
+those labels would create a cycle, since radical prostatectomy is both an
+upfront option at level 4 and a post-reclassification treatment at level 6.
+
 
 Helpers live in `funs/` and are sourced explicitly from `global.R`. Shiny
 auto-sources `R/`, but `global.R` needs these functions available immediately
@@ -36,9 +74,57 @@ ceremony without buying anything at this scope.
 
 ## Dependencies
 
-`shiny`, `dplyr` (>= 1.1.0, for `case_match`/`pick`), `tidyr`, `purrr`
-(>= 1.0.0, for `list_rbind`), `tibble`, `ggplot2`, `echarts4r`, `htmlwidgets`.
-Requires R >= 4.1 for the native pipe and `\(x)` lambda syntax.
+Declared in `DESCRIPTION` and enforced at startup by `dependencies.R`:
+
+| Package | Minimum | Why that floor |
+|---|---|---|
+| R | 4.1 | native pipe, `\(x)` lambda |
+| dplyr | 1.1.0 | `case_match()`, `pick()` |
+| purrr | 1.0.0 | `list_rbind()` |
+| ggplot2 | 3.4.0 | `linewidth` aesthetic |
+| echarts4r | 0.4.5 | `e_on()` |
+| shiny, tidyr, tibble, htmlwidgets | — | no specific feature floor |
+
+`ensure_dependencies()` checks **versions, not just presence**. The usual
+`if (!require(x)) install.packages(x)` idiom would report success against an
+old dplyr and then fail at runtime with "could not find function case_match",
+which is a much worse error to debug than a version message at startup.
+
+It installs automatically in interactive sessions and **never** installs in a
+non-interactive one — auto-installing on a deployment target can block on a
+prompt, write to a read-only library, or silently shift the versions a served
+app is running. Non-interactive sessions get an error listing what to install.
+
+Override either way:
+
+```r
+Sys.setenv(ECHARTS4R_POC_AUTO_INSTALL = "false")   # never auto-install
+Sys.setenv(ECHARTS4R_POC_AUTO_INSTALL = "true")    # always, including headless
+```
+
+`pak` is used when installed (faster, better system-dependency handling), with
+a fallback to `install.packages()`.
+
+The `library()` calls in `global.R` are deliberately explicit and
+unconditional. `rsconnect` and Posit Connect discover an app's dependencies by
+static analysis of `library()` calls, so replacing them with a loop over a
+package vector would break deployment.
+
+### Moving to renv
+
+Auto-install is right for local scoping work and wrong for anything shared —
+it pins nothing, so two people can run different versions of the same commit.
+Once this leaves your machine:
+
+```r
+install.packages("renv")
+renv::init()       # picks up DESCRIPTION, builds a project-local library
+renv::snapshot()   # writes renv.lock -- commit it
+```
+
+Collaborators then run `renv::restore()`. At that point set
+`ECHARTS4R_POC_AUTO_INSTALL=false` in `.Renviron`, since the bootstrap becomes
+redundant and could fight renv over versions.
 
 ## How the click plumbing works
 

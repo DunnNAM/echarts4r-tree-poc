@@ -8,7 +8,8 @@ shiny::fluidPage(
 
   shiny::div(class = "app-title", "Prostate cancer treatment pathways"),
   shiny::div(class = "app-sub",
-             "Interactive pathway tree with linked surveillance PSA trajectories"),
+             "Three interchangeable views over one synthetic cohort, ",
+             "with a shared branch-detail panel"),
 
   shiny::div(
     class = "synthetic-banner",
@@ -35,25 +36,28 @@ shiny::fluidPage(
 
       shiny::hr(),
 
-      shiny::h5("Tree"),
+      shiny::h5("Scope"),
       shiny::radioButtons(
-        "scope", "Scope",
+        "scope", NULL,
         choices = c(
-          "Whole cohort"                      = "all",
+          "Whole cohort"                       = "all",
           "Deferred treatment only (AS vs WW)" = "deferred"
         ),
         selected = "all"
       ),
-      shiny::sliderInput("depth", "Levels expanded initially",
-                         min = 1, max = 6, value = DEFAULT_DEPTH, step = 1),
+
+      shiny::conditionalPanel(
+        condition = "input.view_tabs == 'tree'",
+        shiny::hr(),
+        shiny::h5("Tree"),
+        shiny::sliderInput("depth", "Levels expanded initially",
+                           min = 1, max = 6, value = DEFAULT_DEPTH, step = 1)
+      ),
 
       shiny::hr(),
       shiny::helpText(
-        shiny::HTML(
-          "Hover a node for per-node statistics. Click a node to load the ",
-          "patients on that branch into the panel below. Scroll to zoom and ",
-          "drag to pan the tree."
-        )
+        "Each view resolves a click back to the same patient set, so the ",
+        "detail panel below is directly comparable across all three."
       )
     ),
 
@@ -65,7 +69,15 @@ shiny::fluidPage(
 
       shiny::div(
         class = "panel-card",
-        echarts4r::echarts4rOutput("pathway_tree", height = "620px")
+        shiny::tabsetPanel(
+          id = "view_tabs",
+          shiny::tabPanel("Tree (echarts4r)", value = "tree",
+                          shiny::br(), mod_tree_view_ui("tree")),
+          shiny::tabPanel("Network (visNetwork)", value = "network",
+                          shiny::br(), mod_network_view_ui("network")),
+          shiny::tabPanel("Sankey (echarts4r)", value = "sankey",
+                          shiny::br(), mod_sankey_view_ui("sankey"))
+        )
       ),
 
       shiny::div(
